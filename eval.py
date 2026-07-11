@@ -17,7 +17,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from rag_pipeline import load_vectorstore
 from retrieval import build_hybrid_retriever
 from tools import make_document_search_tool, web_search, calculator
-from agent import build_agent, run_agent, extract_text
+from agent import build_agent, run_agent, extract_text, _invoke_with_retry, ChatGoogleGenerativeAIError
 
 load_dotenv()
 
@@ -45,9 +45,13 @@ Respond in EXACTLY this JSON format, nothing else:
 
 
 def judge(question: str, answer: str) -> dict:
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, google_api_key=os.getenv("GOOGLE_API_KEY"))
-    response = llm.invoke([HumanMessage(content=JUDGE_PROMPT.format(question=question, answer=answer))])
-    text = response.content.strip()
+    llm = ChatGoogleGenerativeAI(model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"), temperature=0, google_api_key=os.getenv("GOOGLE_API_KEY"))
+    try:
+        response = _invoke_with_retry(llm, [HumanMessage(content=JUDGE_PROMPT.format(question=question, answer=answer))])
+    except ChatGoogleGenerativeAIError as e:
+        return {"score": None, "reasoning": f"Judge call failed after retries: {e}"}
+
+    text = extract_text(response.content).strip()
     if text.startswith("```"):
         text = "\n".join(text.split("\n")[1:-1])
     try:

@@ -7,12 +7,17 @@ across turns within a session (keyed by thread_id) — this is what makes
 follow-up questions like "what about its sequel?" work.
 """
 import os
+import logging
 from typing import Annotated, TypedDict
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import ToolMessage, SystemMessage
+from langchain_core.messages import ToolMessage, SystemMessage, AIMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a helpful research assistant with access to tools.
 
@@ -26,6 +31,43 @@ SYSTEM_PROMPT = """You are a helpful research assistant with access to tools.
 - If tools return nothing useful, say so honestly rather than guessing.
 - Cite whether your answer came from the document, the web, or both.
 """
+
+
+@retry(
+    retry=retry_if_exception_type(ChatGoogleGenerativeAIError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=20),
+    reraise=True,
+)
+def _invoke_with_retry(llm, messages):
+    """
+    Retries transient failures (e.g. 503 UNAVAILABLE 'high demand') with
+    exponential backoff: waits ~2s, then ~4s, then ~8s between the 3
+    attempts before giving up and re-raising.
+
+    Note: a 429 RESOURCE_EXHAUSTED for a *daily* quota won't be fixed by
+    a short retry — but retrying briefly is harmless, and we still want
+    to convert the eventual failure into a friendly message rather than
+    crashing the app (see agent_node below).
+    """
+    return llm.invoke(messages)
+
+
+def _friendly_error_message(error: Exception) -> str:
+    text = str(error)
+    if "RESOURCE_EXHAUSTED" in text or "429" in text:
+        return (
+            "⚠️ I've hit the Gemini API's free-tier request limit for this model. "
+            "This isn't a bug in the app — daily quotas reset at midnight Pacific Time. "
+            "In the meantime, you can try setting `GEMINI_MODEL=gemini-2.5-flash-lite` "
+            "in your `.env` file, which typically has a higher free daily quota."
+        )
+    if "UNAVAILABLE" in text or "503" in text:
+        return (
+            "⚠️ Gemini's servers are temporarily overloaded. I retried a few times "
+            "automatically, but it's still unavailable — please try asking again in a minute."
+        )
+    return f"⚠️ The model call failed after retrying: {text[:300]}"
 
 
 class AgentState(TypedDict):
@@ -55,8 +97,9 @@ def extract_text(content) -> str:
 
 
 def build_agent(tools: list):
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model=model_name,
         temperature=0,
         google_api_key=os.getenv("GOOGLE_API_KEY"),
     ).bind_tools(tools)
@@ -68,7 +111,11 @@ def build_agent(tools: list):
         # Ensure the system prompt is present exactly once, at the start
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
-        response = llm.invoke(messages)
+        try:
+            response = _invoke_with_retry(llm, messages)
+        except ChatGoogleGenerativeAIError as e:
+            logger.warning(f"Gemini call failed after retries: {e}")
+            return {"messages": [AIMessage(content=_friendly_error_message(e))]}
         return {"messages": [response]}
 
     def tool_node(state: AgentState) -> dict:
