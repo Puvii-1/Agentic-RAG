@@ -17,7 +17,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from rag_pipeline import load_vectorstore
 from retrieval import build_hybrid_retriever
 from tools import make_document_search_tool, web_search, calculator
-from agent import build_agent, run_agent
+from agent import build_agent, run_agent, extract_text
 
 load_dotenv()
 
@@ -73,7 +73,7 @@ def run_evaluation():
     results = []
     for i, item in enumerate(TEST_QUERIES):
         messages = run_agent(agent_app, item["query"], thread_id=f"eval-{i}")
-        final_answer = messages[-1].content
+        final_answer = extract_text(messages[-1].content)
         tools_used = [m.name for m in messages if hasattr(m, "tool_call_id")]
         score = judge(item["query"], final_answer)
 

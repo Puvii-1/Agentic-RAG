@@ -6,7 +6,7 @@ import streamlit as st
 from rag_pipeline import load_and_split, build_vectorstore, load_vectorstore
 from retrieval import build_hybrid_retriever
 from tools import make_document_search_tool, web_search, calculator
-from agent import build_agent, run_agent
+from agent import build_agent, run_agent, extract_text
 
 st.set_page_config(page_title="Agentic RAG", page_icon="", layout="wide")
 st.title(" Agentic RAG — Document + Web + Math Assistant")
@@ -87,7 +87,7 @@ if question:
                 preview = m.content[:200] + ("…" if len(m.content) > 200 else "")
                 trace.append(f" `{m.name}` returned: {preview}")
 
-        final_answer = messages[-1].content
+        final_answer = extract_text(messages[-1].content)
         st.markdown(final_answer)
         if show_trace and trace:
             with st.expander(f" Reasoning trace ({len(trace)} step(s))"):

@@ -32,6 +32,28 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
+def extract_text(content) -> str:
+    """
+    Newer versions of langchain-google-genai return message content as a
+    list of content blocks (e.g. [{"type": "text", "text": "...", "extras": {...}}])
+    instead of a plain string, especially when the response includes extra
+    metadata like grounding signatures. This normalizes either shape into
+    plain text for display.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts)
+    return str(content)
+
+
 def build_agent(tools: list):
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
